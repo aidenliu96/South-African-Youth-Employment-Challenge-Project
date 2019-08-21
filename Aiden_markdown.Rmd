@@ -1,0 +1,313 @@
+---
+title: "South African Youth Employment Challenge Project"
+author: "Aiden Liu"
+date: "8/21/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+## Employment Challenge Project
+This is a project I took on when I was attending the iXperience Program, learning about Data Science
+in Cape Town, South Africa. There is currently a youth employment crisis in South Africa, with more than
+27% of the youth being unemployed. By utilizing various Data Science techniques, this Employment Challenge Project aims to achieve 2 objectives: 
+
+1. Predict who is likely to be in work based on the given data
+
+2. Produce insights on both the South African youth and the South African job market to help Harambee think
+   about interventions (Harambee is an organization focused on solving the Youth Unemployment issue in South    Africa "https://harambee.co.za/")
+   
+
+## About the Data
+A longitudinal dataset (for at least some individuals). There are 83,270 observations in the training data set (which is a csv file in this repo).
+Data is collected at a 'baseline' where people are asked about their current circumstances and do some tests. They are then contacted periodically after that and asked about their labour market status.
+
+
+## Data collected from tests
+There is data from five separate tests (each in a separate csv file). These are:
+
+- CFT: a measure of fluid intelligence (or ability);
+- COM: a measure of ability to communicate in English;
+- NUM: a measure of numerical ability;
+- GRIT: a score for 'grit' or resilience;
+- OPT: a measure of a person's optimism.
+
+
+## Data collected at 'baseline'
+- gender (male or female, extracted from the SA ID number. People without a South African ID number will most likely be NA since the scripts to parse the number will fail).
+- dob (date of birth, anonimised to the first of the month).
+- province (where the respondent was living at time of registration).
+- volunteer (whether the person did any volunteering currently or in the past).
+- leadershiprole (whether the person has had any leadership role, for example in the church, or on a sports team).
+- peoplelive (how many people live together in the household, excludes the respondent).
+- peoplelive_15plus (how many of these people are 15 years or older).
+- numchildren (number of children the person has).
+- numearnincome (number of people who earn income in the household).
+- anygrant (whether the household receives any social grants like the child support grant, disability grant or old age pension. South African households are often multiple generations and so young people can be living with their grandparents who receive a state pension).
+- anyhhincome (whether the household receives any income).
+- financial_situation_now (how the person perceives their current financial situation).
+- financial_situation_5years (what the person thinks their financial situation will be like in 5 years' time).
+- givemoney_yes (whether they give money to other people, like their family).
+
+
+## Data collected from follow-up surveys
+People are then contacted periodically (at about 4 monthly intervals) and asked about their current labour market status.
+
+These variables are:
+
+- survey_date_month (month and year survey takes place).
+- survey_num (the number of the survey after the 'baseline' i.e. survey_num==1 would be the first survey after baseline).
+- working (whether a person is working or not at the time of the survey).
+- job_start_date (when the person started the job).
+- job_leave_date (the date they left their last job: sometimes it is entered as the current date if they are still working).
+- company_size (the size of the company someone is working at).
+- monthly_pay (the monthly pay range if someone is working).
+
+
+```{r importing libraries, include=FALSE}
+options(scipen=999)
+library(tidyverse)
+library(lubridate)
+library(caret)
+```
+
+
+## Reading in Data
+```{r reading data, echo=TRUE}
+# Reading data
+df <- read.csv("data/raw/teaching_training_data.csv")
+
+# Reading in data for each assessment
+
+# test for cognitive fluency
+df_cft <- read.csv("data/raw/teaching_training_data_cft.csv")
+# communication ability
+df_com <- read.csv("data/raw/teaching_training_data_com.csv")
+# grit
+df_grit <- read.csv("data/raw/teaching_training_data_grit.csv")
+# numeracy
+df_num <- read.csv("data/raw/teaching_training_data_num.csv")
+# optimism
+df_opt <- read.csv("data/raw/teaching_training_data_opt.csv")
+```
+
+
+```{r cleaning up assessment data, echo=TRUE}
+# Each individual should only have one assessment
+# set up the data so this is the case
+# Also need to only keep the unid and score
+df_cft <- df_cft %>% 
+  select(unid, cft_score) %>% 
+  distinct(unid, .keep_all = TRUE)
+
+# I want to do this for all 5 asssessments
+# keep_all keeps the rest of the variables in the data frame instead of just the unid, in this case, keep the scores as well
+helper_function <- function(file_name) {
+  file_name %>% 
+    select(2:3) %>% 
+    distinct(unid, .keep_all = TRUE)
+}
+df_opt <- helper_function(df_opt)
+df_com <- helper_function(df_com)
+df_grit <- helper_function(df_grit)
+df_num <- helper_function(df_num)
+```
+
+
+```{r adding assessment columns to dataframe, echo=TRUE}
+# Adding assessment columns to dataframe
+# full_join retains the number of rows in the dataframe
+df_assess <- full_join(df_cft, df_com, by ="unid")
+df_assess <- df_assess %>% 
+  full_join(df_grit, by ="unid") %>% 
+  full_join(df_num, by ="unid") %>% 
+  full_join(df_opt, by ="unid")
+df <- full_join(df, df_assess, by ="unid")
+```
+
+
+## Data Cleaning Process
+```{r echo=TRUE}
+# Since I am only interested in one single row entry of each individual 
+# hence I removed repeating survey number (survey_num >= 2)
+df_cleaned <- df %>% distinct(unid, .keep_all = TRUE)
+```
+
+```{r echo=TRUE}
+# Adding age column to the dataframe as I thought it is an important feature to consider
+df_cleaned <- df_cleaned %>% 
+  mutate(age_at_survey = (interval(dob, survey_date_month)/years(1))) %>% 
+  mutate(age = floor(age_at_survey) )
+df <- df %>% 
+  mutate(age_at_survey = (interval(dob, survey_date_month)/years(1))) %>% 
+  mutate(age = floor(age_at_survey) )
+```
+
+```{r echo=TRUE}
+# Again, since I am only interested in one single row entry of each individual
+# I removed the post-survey columns (data collected post first survey) 
+# as I would not need these features in my working predictions
+# These include columns stated above such as monthly_pay and company_size
+df_cleaned <- subset(df_cleaned, select = -c(X,survey_num,job_start_date,job_leave_date,company_size,monthly_pay))
+```
+
+```{r echo=TRUE}
+# Checking the percentage of missing values in each column
+# Deciding a threshold of percentage of missing values, in this case it is 60%
+# and then delete columns that has more than 60% missing values, as I decided that
+# there is simply not enough data for the feature to be useful in my working prediction
+(colSums(is.na(df_cleaned))*100)/dim(df_cleaned)[1]
+
+# Remove columns 'province', 'peoplelive_15plus', 'numearnincome', 'com_score', 'num_score'
+# Also remove columns 'age_at_survey', 'dob', 'survey_date_month' as they are irrelevant to my prediction since the age column has already been created
+df_cleaned <- subset(df_cleaned, select = -c(peoplelive_15plus, num_score, province, numearnincome, com_score, age_at_survey, dob, survey_date_month))
+```
+
+```{r}
+(colSums(is.na(df_cleaned))*100)/dim(df_cleaned)[1]
+
+# First noticed that the percentages of NAs in 'volunteer' and 'leadershiprole' are the same
+# Hence, filter out rows with NAs in both columns --> did not impute as they are binary variables
+df_cleaned <- df_cleaned %>% filter(!is.na(volunteer))
+
+# Similar case happens for rows in 'financial_situation_now' & 'financial_situation_5years'
+# Hence, filter out those rows with NAs in both columns
+df_cleaned <- df_cleaned %>% filter(!is.na(financial_situation_now))
+```
+
+```{r}
+# Double check the % of NAs in those filtered columns
+(colSums(is.na(df_cleaned))*100)/dim(df_cleaned)[1]
+```
+```{r}
+# 'numchildren' has 0.12% NAs and 'givemoney_yes' has 2.25% NAs, hence filter rows with NAs in those out
+# 'age' has 0.013% NAs and hence filter rows with NAs in 'age' out as well
+# Again, I'm following the rule of not imputing any binary/categorical variables
+df_cleaned <- df_cleaned %>% filter(!is.na(numchildren)) %>% filter(!is.na(givemoney_yes)) %>% filter(!is.na(age))
+```
+
+```{r warning=FALSE}
+# Only 'cft_score' column has NAs now
+(colSums(is.na(df_cleaned))*100)/dim(df_cleaned)[1]
+# Since there is roughly about 25% of NAs in 'cft_score', I chose to impute this variable
+# First plotting the histogram of cft_score
+ggplot(df_cleaned, aes(x=cft_score)) + geom_histogram()
+# This is a normal distribution with no extreme outliners, I chose to impute with mean
+df_cleaned$cft_score[is.na(df_cleaned$cft_score)] <- mean(df_cleaned$age, na.rm = TRUE)
+```
+
+```{r}
+# Always good to double check again if every column is filled
+(colSums(is.na(df_cleaned))*100)/dim(df_cleaned)[1]
+```
+
+
+## Working Prediction Approch: Simple GLM model
+Since the nature of the variable I am predicting is binary (working/not working), it makes sense to use a logistic regression (GLM) model from the caret package.
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+# Splitting data into training and testing dataset, with a 80-20 split
+trainRowNumbers <- createDataPartition(df_cleaned$working, p=0.8, list=FALSE)
+trainData <- df_cleaned[trainRowNumbers,]
+testData <- df_cleaned[-trainRowNumbers,]
+
+# Cross-validation
+trControl <- trainControl(method = "cv", number = 10, verboseIter = TRUE)
+
+# GLM model on cleaned dataframe (df)
+model_glm <- train(as.factor(working) ~ ., data=trainData, method='glm', trControl = trControl)
+predicted_glm <- predict(model_glm, testData)
+model_glm
+caret::confusionMatrix(as.factor(predicted_glm), as.factor(testData$working))
+```
+
+
+## Improved Approach of GLM model
+I noticed that the confusion matrix of the prediction is not ideal, as it is simply predicting all false, which also means that the probability of individuals in this data being in work is always less than 50%.
+Therefore, I decided to change the threshold of my working prediction, meaning to adjust the probability of individuals working such that those who have probabilities of above 30% are predicted as working.
+
+```{r}
+model_glm_alt <- glm(as.factor(working) ~ ., data=testData, family = binomial("logit"))
+model_glm_alt_pred <- as.data.frame(predict(model_glm_alt, data = testData, type = 'response')) %>% rename(pred = 'predict(model_glm_alt, data = testData, type = \"response\")')
+model_glm_alt_pred <- bind_cols(testData, model_glm_alt_pred)
+model_glm_alt_pred <- model_glm_alt_pred %>% mutate(binary_pred = case_when(pred >= 0.30 ~TRUE, pred < 0.30 ~FALSE))
+confusionMatrix(as.factor(model_glm_alt_pred$binary_pred), as.factor(testData$working))
+```
+
+## Explanation of improvement of the model 
+Although it is true that the accuracy of the modified model went down, however in this case, I am actually increasing the specificty and predicting more TRUE (working) results. This can be argued that is a better approach than the orginial GLM model despite the decrease in accuracy
+
+
+## Insights
+As mentioned above, the rows with NA values in the column 'volunteer' also has NA values in 'leadershiprole'. It is interesting to me how there are columns that have the exact same pattern as the two mentioned above. Specifically, they are 'anyhhincome' and 'anygrant'. To me, this is no coincidence, hence I wanted to look more into it and hopefully draw some insights about these particular columns.
+
+
+### Insight 1: Outside Activities v.s Working
+```{r}
+# combining the columns 'volunteer' and 'leadershiprole' into one column 'out_acti' which stands for outside activities, and it is binary (TRUE when individual has either, FALSE otherwise)
+df <- df %>% mutate(out_acti = case_when((df$volunteer == 'Yes' | df$leadershiprole == 'Yes') ~ 'TRUE',
+                                         (df$volunteer == 'No' | df$leadershiprole == 'No' ~ 'FALSE')))
+df_out_acti <- df %>% filter(!is.na(out_acti))
+
+# the regression model shows that additional 2% chance of working if one has volunteer and/or leadership experience
+reg_out_acti = lm(working ~ out_acti, data = df_out_acti)
+summary(reg_out_acti)
+```
+
+### Inisight 1 Conclusion
+Firstly, it is important to point out that 'volunteer' in the South African context is a little bit different from the States and the rest of the world. Due to the high level of unemployment in South Africa, volunteering is often referred to as jobless people helping out in events that are short of staff, and they get paid from doing so. Hence, often times, people without a job would simply go around 'volunteering' for events and that is how they make a living. Though 'volunteering' here is used in a different context, nonetheless, it is also part of a working experience and should not be taken lightly.
+Since there is an additional 2% chance of youth working if he/she happens to have volunteering or a leadership experience, Harambee would be able to intervene by designing courses or create platforms for such experiences to be had for youth.
+
+
+### Insight 2: External Support v.s Working
+```{r}
+# combining columns 'anygrant' and 'anyhhincome' into one column 'ext_supp' which stands for external support, and it is binary (TRUE when individual has either, FALSE otherwise)
+df <- df %>% mutate(ext_supp = case_when((df$anygrant == 'TRUE' | df$anyhhincome == 'TRUE') ~ 'TRUE',
+                                         (df$anygrant == 'FALSE' | df$anyhhincome == 'FALSE' ~ 'FALSE')))
+df_ext_supp <- df %>% filter(!is.na(ext_supp))
+
+# the regression model shows that additional 7% chance of working if one has external support
+reg_ext_supp = lm(working ~ ext_supp, data = df)
+summary(reg_ext_supp)
+```
+
+### Insight 2 Conclusion
+Based on the regression model, there is a 7 percentage points increase if one has external support, receiving funding in one way or another. It is however, extremely significant as it is a roughly 36% rise from one not having external support (19% probability of working) to one having external support (26% probability of working). I believe the reason for such a notable difference is because for families that has household income, the working people could perhaps have better connections and also a better understand the current status of the job market, in terms of any potential job openings or even just the basic understanding of what it takes to land a job. In a family-oriented society like South Africa's, having people in the family working is definitely a huge factor in one landing a job. In additon, from my own experiences of hearing stories from the local South Africans, the South African families would often spend money to print out flyers/resumes to go around and advertise themselves. This is made easier with any form of external support. It is very interesting how South African families utilize their external support and I think it deserves further research in order to come up with great interventions.
+
+
+### Insight 3: Age & Gender v.s Working
+```{r echo=TRUE, warning=FALSE}
+# Plotting a graph showing percentage of females and males working based on their age using ggplot
+ggplot(data = df, aes(x = age)) +
+  geom_bar(aes(fill = working), position = "fill") + facet_grid(~gender) +
+  theme(axis.text.x = element_text(angle = 50, hjust =1)) +
+  ylab("Percentage") + xlab("Age") +
+  labs(subtitle = "Gender") + theme(plot.subtitle = element_text(hjust = 0.5)) + 
+  scale_y_continuous(labels=scales::percent)
+```
+
+### Insight 3 Conclusion
+This is a plot of the percentage of females and males working at different ages. The graphs are somewhat telling but not entirely accurate. Firstly, it can be noticed that more males are in work in general as seen by the higher green bars on the right of the plot. Secondly, similar to both females and males, the optimal age range to be employed is around 24-30 years old as there is a slight rise in the percentage of females/males that are employed. I am only focusing on the age range between 18-35 (youth). The green bars that are above 50% are not exactly telling as often times, there are only so few data points of people at that particular age so if they are working, it would yield a 100% rate of working. The conclusion here is that a higher percentage of males are employed more than females and most youth workers are between the age of 24-30 years old. I believe Harambee would be able to take this information and do further research on the characteristics of the youth in that particlar age range (24-30) to understand why they have a higher chance of getting employed, as well as to find out the difference in the characteristics between the male and female youth.
+
+
+### Insight 4: Province v.s Working
+```{r echo=TRUE, warning=FALSE}
+# Plotting a graph showing percentage of people working based on their province using ggplot
+ggplot(data = df %>% filter(!is.na(province)), aes(x = province)) +
+  geom_bar(aes(fill = working), position = 'fill') +
+  theme(axis.text.x = element_text(angle = 60, hjust = 1)) +
+  ylab('proportion of working/not working')
+```
+
+### Insight 4 Conclusion
+This is a plot of the proportion of youth working/not working based on their located province. I found that that out of this dataset, only North West and Western Cape regions have more than 25% of people working, showing that perhaps there is more employment opportunities in these regions. In regions such as Eastern Cape on the other hand, there is roughly only 22% of the people living there working in this dataset. Sure enough, after researching on the job market in these regions, I found articles which support this result, one exmaple would be "https://www.iol.co.za/weekend-argus/western-cape-is-leading-creator-of-employment-21632718" which states that "Western Cape is leading creator of employment". This particular article is dated 20 April 2019, showing that it is quite recent. I believe this finding could potentially allow Harambee to intervene by relocating youth who are finding jobs to regions such as Western Cape and perhaps it will increase their chances of getting hired.
+
+
+
+## Project Conclusion
+As my first Data Science Project, I have definitely learned a ton from this experience. As I reflect upon the result/insights that I obtained, I feel that it is important to point out ways perhaps I could have done better in terms of my prediction and insights.
+
+The provided data has about 76% of the people not working and only about 24% of the people working. In other words, the data is rather skewed. This is the reason why I decided to lower the threshold to predicting working to below 30% in my improved GLM model. One thing I could have done to make my prediction better is perhaps add a heavier weight and emphasize the individuals who are working, and to highlgiht the variables that make them better candidates to be employed. This will be part of my further research, by learning techniques to refine and fine-tune my predictions.
+
+In terms of the insights, I believe I can dive into further research and spend more time finding evidence to backup my findings and perhaps think of ways that Harambee could intervene. As I get more familiar with R, I also think that there may be some insights to be drawn from the data collection process, and advice Harambee on how it can better collect its data to yield a more accurate prediction.
